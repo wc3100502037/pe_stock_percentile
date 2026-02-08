@@ -77,8 +77,8 @@ class ValuationCalculator:
             output_col = 'pb'
             percentile_col = 'pb_percentile'
 
-        # 检查是否有该列，如果没有则使用close作为回退
-        if value_col not in df.columns:
+        # 检查是否有该列，如果没有或全部为空则使用close作为回退
+        if value_col not in df.columns or df[value_col].isna().all():
             value_col = 'close'
 
         # 在选定的范围内计算百分位
