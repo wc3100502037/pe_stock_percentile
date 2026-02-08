@@ -3,6 +3,40 @@ import pandas as pd
 from datetime import datetime, timedelta
 from database import StockDatabase
 from config import STOCK_FIELDS, DEFAULT_YEARS
+import socket
+
+
+def check_network_connection():
+    """检查网络连接状态"""
+    try:
+        # 尝试连接百度服务器，超时3秒
+        socket.create_connection(("www.baidu.com", 80), timeout=3)
+        return True
+    except OSError:
+        return False
+
+
+def is_trading_day(date: datetime) -> bool:
+    """判断是否为交易日（非周末且非节假日）"""
+    # 先判断是否为周末
+    if date.weekday() >= 5:  # 周六=5, 周日=6
+        return False
+    
+    # 简单节假日判断（主要节假日）
+    # 注意：这里只包含固定日期的节假日，农历节日需要更复杂的计算
+    month_day = (date.month, date.day)
+    
+    # 固定节假日（元旦、劳动节、国庆节等）
+    fixed_holidays = [
+        (1, 1),   # 元旦
+        (5, 1),   # 劳动节
+        (10, 1), (10, 2), (10, 3),  # 国庆节
+    ]
+    
+    if month_day in fixed_holidays:
+        return False
+    
+    return True
 
 
 class DataFetcher:
@@ -135,11 +169,13 @@ class DataFetcher:
         """
         # 尝试标准化股票代码，如果不存在则尝试另一个市场
         normalized_code = self.try_normalize_stock_code(stock_code)
+        print(f"[DEBUG] fetch_stock_data: 输入={stock_code}, 标准化={normalized_code}")
 
         # 获取股票名称
         self._report_progress("正在获取股票信息...", 2)
         stock_name = self.get_stock_name(stock_code)
         self._report_progress(f"股票: {stock_name}", 3)
+        print(f"[DEBUG] 股票名称: {stock_name}")
         
         if end_date is None:
             end_date = datetime.now().strftime('%Y-%m-%d')
@@ -150,17 +186,52 @@ class DataFetcher:
         
         self._report_progress(f"准备获取 {normalized_code} ({stock_name}) 的数据...", 0)
         
+        # 检查网络连接
+        if not check_network_connection():
+            self._report_progress("网络未连接，尝试使用本地数据...", 0)
+            print("[DEBUG] 网络未连接")
+            # 网络断开时，尝试使用本地数据
+            existing_data = self.db.get_stock_data(normalized_code, start_date, end_date)
+            if not existing_data.empty:
+                self._report_progress(f"使用本地缓存数据 ({len(existing_data)} 条)", 100)
+                print(f"[DEBUG] 网络断开，使用本地数据: {len(existing_data)} 条")
+                return existing_data, stock_name
+            else:
+                self._report_progress("无网络且无本地数据", 0)
+                return pd.DataFrame(), stock_name
+        
         if not force_update:
             existing_data = self.db.get_stock_data(normalized_code, start_date, end_date)
             last_update = self.db.get_last_update_date(normalized_code)
+            print(f"[DEBUG] 本地数据: {len(existing_data)} 条, 最后更新: {last_update}, 请求结束日期: {end_date}")
             
             if not existing_data.empty and last_update and last_update >= end_date:
                 self._report_progress(f"使用本地缓存数据 ({len(existing_data)} 条)", 100)
+                print(f"[DEBUG] 使用本地缓存数据")
                 return existing_data, stock_name
             
             if last_update and last_update < end_date:
-                start_date = (datetime.strptime(last_update, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
-                self._report_progress(f"本地数据截止到 {last_update}，需要更新", 15)
+                # 判断是否需要更新到end_date（考虑交易日）
+                last_update_date = datetime.strptime(last_update, '%Y-%m-%d')
+                end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+                
+                # 找到从last_update+1到end_date之间的最后一个交易日
+                current_date = last_update_date + timedelta(days=1)
+                last_trading_day = None
+                while current_date <= end_date_obj:
+                    if is_trading_day(current_date):
+                        last_trading_day = current_date
+                    current_date += timedelta(days=1)
+                
+                if last_trading_day is None:
+                    # last_update之后没有交易日，直接使用本地数据
+                    self._report_progress(f"本地数据已是最新（无新交易日）", 100)
+                    print(f"[DEBUG] 无新交易日，使用本地数据")
+                    return existing_data, stock_name
+                
+                start_date = last_trading_day.strftime('%Y-%m-%d')
+                self._report_progress(f"本地数据截止到 {last_update}，需要更新到 {start_date}", 15)
+                print(f"[DEBUG] 需要更新数据，新开始日期: {start_date}")
         
         if not self.login():
             return pd.DataFrame(), stock_name
@@ -196,7 +267,15 @@ class DataFetcher:
                 self._report_progress(f"已接收 {total_count} 条数据...", progress)
         
         if not data_list:
-            self._report_progress("未获取到数据", 0)
+            self._report_progress("未获取到新数据", 0)
+            print(f"[DEBUG] 未获取到新数据: {normalized_code}, error_code={rs.error_code}")
+            
+            # 如果本地有数据，返回本地数据（可能是非交易日）
+            if not existing_data.empty:
+                self._report_progress(f"使用本地缓存数据 ({len(existing_data)} 条)", 100)
+                print(f"[DEBUG] 网络无新数据，使用本地缓存: {len(existing_data)} 条")
+                return existing_data, stock_name
+            
             return pd.DataFrame(), stock_name
         
         self._report_progress(f"接收到 {len(data_list)} 条数据，正在处理...", 75)

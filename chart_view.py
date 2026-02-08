@@ -136,12 +136,34 @@ class ChartView:
         """更新悬停显示效果"""
         self._clear_hover_elements()
 
+        # 计算tooltip位置：显示在鼠标右边，避免被左边界截断
+        # 根据x位置动态调整：如果靠近左边界，tooltip显示在右边；否则显示在左边
+        x_min, x_max = self.ax1.get_xlim()
+        x_range = x_max - x_min
+        
+        # 如果x在左半边，tooltip显示在右边；如果在右半边，显示在左边
+        if x < x_min + x_range * 0.3:
+            # 靠近左边界，tooltip显示在右下方
+            xytext1 = (30, -60)
+            xytext2 = (30, -60)
+            xytext3 = (30, 30)
+        elif x > x_max - x_range * 0.3:
+            # 靠近右边界，tooltip显示在左下方
+            xytext1 = (-30, -60)
+            xytext2 = (-30, -60)
+            xytext3 = (-30, 30)
+        else:
+            # 中间区域，默认显示在右下方
+            xytext1 = (30, -60)
+            xytext2 = (30, -60)
+            xytext3 = (30, 30)
+
         # 在第一个子图（股价）添加垂直线和注释
         self.vline1 = self.ax1.axvline(x=x, color='gray', linestyle='--', alpha=0.7, linewidth=1)
         self.annot1 = self.ax1.annotate(
             text,
             xy=(x, y1),
-            xytext=(15, 15),
+            xytext=xytext1,
             textcoords='offset points',
             bbox=dict(boxstyle='round,pad=0.5', fc='yellow', alpha=0.9, ec='orange'),
             fontsize=9,
@@ -153,7 +175,7 @@ class ChartView:
         self.annot2 = self.ax2.annotate(
             text,
             xy=(x, y2),
-            xytext=(15, 15),
+            xytext=xytext2,
             textcoords='offset points',
             bbox=dict(boxstyle='round,pad=0.5', fc='lightgreen', alpha=0.9, ec='green'),
             fontsize=9,
@@ -165,7 +187,7 @@ class ChartView:
         self.annot3 = self.ax3.annotate(
             text,
             xy=(x, y3),
-            xytext=(15, 15),
+            xytext=xytext3,
             textcoords='offset points',
             bbox=dict(boxstyle='round,pad=0.5', fc='lightblue', alpha=0.9, ec='blue'),
             fontsize=9,
@@ -174,7 +196,7 @@ class ChartView:
 
         self.canvas.draw_idle()
     
-    def plot_data(self, df, stock_code, stock_name=None, start_date_idx=0, valuation_type='PE'):
+    def plot_data(self, df, stock_code, stock_name=None, start_date_idx=0, end_date_idx=None, valuation_type='PE'):
         self.data = df
         self.stock_code = stock_code
         self.stock_name = stock_name or stock_code
@@ -192,7 +214,11 @@ class ChartView:
             self.canvas.draw()
             return
 
-        df_plot = df.iloc[start_date_idx:].copy()
+        # 处理起止索引
+        if end_date_idx is None:
+            end_date_idx = len(df)
+        
+        df_plot = df.iloc[start_date_idx:end_date_idx].copy()
 
         if df_plot.empty:
             df_plot = df.copy()
